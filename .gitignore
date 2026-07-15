@@ -1,6 +1,6 @@
 # Environment
 .env
-
+.env.example
 # Backend
 backend/server.exe
 backend/tmp/
