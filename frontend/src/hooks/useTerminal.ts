@@ -222,17 +222,8 @@ export default function useTerminal() {
       dispatch({ type: 'SET_INPUT', input: '' })
 
       if (state.formMode.step + 1 >= state.formMode.fields.length) {
-        const data = { ...state.formMode.data, [field.key]: input }
         dispatch({ type: 'EXIT_FORM_MODE' })
-        addLine({ type: 'system', content: 'Sending message...' })
-
-        const { postContact } = await import('../api/client')
-        const result = await postContact(data as { name: string; email: string; message: string })
-        if (result.success) {
-          addLine({ type: 'success', content: "Message sent! I'll get back to you soon." })
-        } else {
-          addLine({ type: 'error', content: result.error || 'Failed to send.' })
-        }
+        addLine({ type: 'system', content: 'Message logged. Use the email command to reach out directly.' })
       }
       return
     }

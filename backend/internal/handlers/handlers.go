@@ -94,6 +94,7 @@ func (h *Handler) GetHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) PostAsk(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 10_000)
 	var req models.AskRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonResponse(w, http.StatusBadRequest, models.ErrorResponse{Error: "Invalid request body."})
@@ -117,18 +118,10 @@ func (h *Handler) PostAsk(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) askLLM(question string) (string, error) {
-	apiKey := os.Getenv("OPENAI_API_KEY")
-	apiURL := os.Getenv("LLM_API_URL")
-	model := os.Getenv("LLM_MODEL")
-
-	if apiKey == "" {
+	raw := os.Getenv("GEMINI_API_KEY")
+	keys := strings.FieldsFunc(raw, func(r rune) bool { return r == ',' || r == ' ' })
+	if len(keys) == 0 || keys[0] == "" {
 		return h.fallbackAnswer(question), nil
-	}
-	if apiURL == "" {
-		apiURL = "https://api.openai.com/v1/chat/completions"
-	}
-	if model == "" {
-		model = "gpt-4o-mini"
 	}
 
 	profile := data.GetProfile()
@@ -189,44 +182,65 @@ Question: %s
 Answer:`, contextStr.String(), question)
 
 	body := map[string]interface{}{
-		"model": model,
-		"messages": []map[string]string{
-			{"role": "system", "content": "You are a helpful assistant answering questions about a developer's portfolio. Be concise and factual."},
-			{"role": "user", "content": prompt},
+		"contents": []map[string]interface{}{
+			{
+				"parts": []map[string]string{
+					{"text": prompt},
+				},
+			},
 		},
-		"max_tokens":  200,
-		"temperature": 0.3,
+		"generationConfig": map[string]interface{}{
+			"maxOutputTokens": 200,
+			"temperature":     0.3,
+		},
 	}
 
 	bodyJSON, _ := json.Marshal(body)
-	req, err := http.NewRequest("POST", apiURL, bytes.NewReader(bodyJSON))
-	if err != nil {
-		return "", err
+
+	var lastErr error
+	for _, key := range keys {
+		apiURL := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=%s", key)
+
+		req, err := http.NewRequest("POST", apiURL, bytes.NewReader(bodyJSON))
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode == 429 || resp.StatusCode == 403 {
+			lastErr = fmt.Errorf("key exhausted (HTTP %d)", resp.StatusCode)
+			resp.Body.Close()
+			continue
+		}
+
+		respBody, _ := io.ReadAll(resp.Body)
+		var result struct {
+			Candidates []struct {
+				Content struct {
+					Parts []struct {
+						Text string `json:"text"`
+					} `json:"parts"`
+				} `json:"content"`
+			} `json:"candidates"`
+		}
+
+		if err := json.Unmarshal(respBody, &result); err != nil || len(result.Candidates) == 0 || len(result.Candidates[0].Content.Parts) == 0 {
+			lastErr = fmt.Errorf("LLM returned unexpected response")
+			continue
+		}
+
+		return strings.TrimSpace(result.Candidates[0].Content.Parts[0].Text), nil
 	}
 
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+apiKey)
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	respBody, _ := io.ReadAll(resp.Body)
-	var result struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-
-	if err := json.Unmarshal(respBody, &result); err != nil || len(result.Choices) == 0 {
-		return "", fmt.Errorf("LLM returned unexpected response")
-	}
-
-	return strings.TrimSpace(result.Choices[0].Message.Content), nil
+	return "", lastErr
 }
 
 func (h *Handler) fallbackAnswer(question string) string {

@@ -1,6 +1,6 @@
 import type { Profile, Skill, Project, Experience, Education, Achievement, Socials, ApiCache } from '../types'
 
-const API_BASE = '/api'
+const API_BASE = import.meta.env.VITE_API_URL || '/api'
 
 const cache: ApiCache = {}
 
